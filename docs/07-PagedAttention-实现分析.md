@@ -7,11 +7,32 @@ nav_order: 8
 
 ## 1. 概述
 
-PagedAttention 是 vLLM 的核心创新（Kwon et al., SOSP 2023），其关键思想是将 KV cache 划分为**固定大小的 block（页）**，类似于操作系统的虚拟内存分页。这带来了三个核心优势：
+### 1.1 背景：KV Cache 内存浪费是 LLM 服务的首要瓶颈
 
-- **零内存浪费**：KV cache 可以非连续分配，消除内部碎片
-- **Prefix 共享**：多个请求共享相同的物理 block（通过引用计数），避免重复计算
-- **按需分配**：仅为实际计算的 token 分配 block，支持动态调度
+在 PagedAttention 出现之前，推理引擎（HuggingFace Transformers、FasterTransformer 等）为每个请求预分配**一整块连续显存**存放 KV cache，大小按 `max_model_len × num_kv_heads × head_size × num_layers × 2` 计算。
+
+以一个 7B 模型为例（`max_model_len=8192`，FP16）：单个请求的 KV cache 需要约 2 GB 显存。但大多数实际对话只生成 200-500 token——预留了 8192 个位置，却只用了不到 10%。**一个请求浪费 90% 的 KV cache 空间，100 个并发请求就能让 200 GB 显存的 H100 集群利用率不到 30%。**
+
+更关键的是，传统引擎无法在请求间**共享** KV cache。当 100 个用户共享同一个 2000 token 的 system prompt 时，传统引擎需要为每个请求**独立计算并存储**这 2000 个 token 的 KV——白白浪费了 199 次重复计算和存储。
+
+### 1.2 PagedAttention 的解决方案
+
+PagedAttention 是 vLLM 的核心创新（Kwon et al., SOSP 2023），其关键思想是将 KV cache 划分为**固定大小的 block（页）**，类似操作系统的虚拟内存分页。这带来了三个核心优势：
+
+- **零内存碎片**：KV cache 按 block 粒度（16/32 tokens）按需分配，用多少占多少
+- **Prefix 共享**：多个请求的公共前缀（如 system prompt）指向同一物理 block，引用计数管理，一次计算、全员共享
+- **灵活调度**：物理内存非连续，block 可任意分配和回收，支持 preemption 和动态扩缩
+
+### 1.3 PagedAttention 带来的价值
+
+| | 传统引擎 | vLLM + PagedAttention |
+|---|---|---|
+| **KV cache 利用率** | ~30%（预分配浪费） | ~95%（按需分配） |
+| **Prefix 重复计算** | 每次请求独立计算 | 共享前缀物理 block，只算一次 |
+| **最大并发请求数** | 受显存预分配限制 | 可多支撑 3-10× 并发 |
+| **调度灵活性** | 预分配后不可动态调整 | block 粒度的 preemption + 回收 |
+
+在 LLM API 服务场景（数百并发、长 system prompt、序列长度差异大）中，PagedAttention 是实现商业化服务规模化的关键基础设施突破。
 
 ---
 
@@ -34,23 +55,23 @@ PagedAttention 是 vLLM 的核心创新（Kwon et al., SOSP 2023），其关键�
 
 | 模块 | 路径 |
 |------|------|
-| Backend 注册与选择 | [registry.py](vllm/v1/attention/backends/registry.py#L34), [selector.py](vllm/v1/attention/selector.py#L52) |
-| 后端抽象类 | [backend.py](vllm/v1/attention/backend.py#L55) |
-| FlashAttention 后端（主路径） | [flash_attn.py](vllm/v1/attention/backends/flash_attn.py#L68) |
-| Triton 后端 | [triton_attn.py](vllm/v1/attention/backends/triton_attn.py#L271) |
-| Triton decode kernel | [triton_decode_attention.py](vllm/v1/attention/ops/triton_decode_attention.py#L729) |
-| Triton prefill kernel | [triton_prefill_attention.py](vllm/v1/attention/ops/triton_prefill_attention.py#L191) |
-| Triton unified kernel | [triton_unified_attention.py](vllm/v1/attention/ops/triton_unified_attention.py#L763) |
-| CUDA kernel V1 | [paged_attention_v1.cu](csrc/attention/paged_attention_v1.cu#L160) |
-| CUDA kernel V2 | [paged_attention_v2.cu](csrc/attention/paged_attention_v2.cu#L27) |
-| CUDA kernel 核心算法 | [attention_kernels.cuh](csrc/attention/attention_kernels.cuh#L85) |
-| Cache CUDA kernel | [cache_kernels.cu](csrc/cache_kernels.cu#L244) |
-| PagedAttention ops | [paged_attn.py](vllm/v1/attention/ops/paged_attn.py#L15) |
-| Block 池 | [block_pool.py](vllm/v1/core/block_pool.py#L130) |
-| KV Cache 工具 | [kv_cache_utils.py](vllm/v1/core/kv_cache_utils.py#L116) |
-| KV Cache 管理器 | [kv_cache_manager.py](vllm/v1/core/kv_cache_manager.py#L110) |
-| 单一类型管理器 | [single_type_kv_cache_manager.py](vllm/v1/core/single_type_kv_cache_manager.py#L31) |
-| 协调器 | [kv_cache_coordinator.py](vllm/v1/core/kv_cache_coordinator.py#L276) |
+| Backend 注册与选择 | [registry.py](../vllm/vllm/v1/attention/backends/registry.py#L34), [selector.py](../vllm/vllm/v1/attention/selector.py#L52) |
+| 后端抽象类 | [backend.py](../vllm/vllm/v1/attention/backend.py#L55) |
+| FlashAttention 后端（主路径） | [flash_attn.py](../vllm/vllm/v1/attention/backends/flash_attn.py#L68) |
+| Triton 后端 | [triton_attn.py](../vllm/vllm/v1/attention/backends/triton_attn.py#L271) |
+| Triton decode kernel | [triton_decode_attention.py](../vllm/vllm/v1/attention/ops/triton_decode_attention.py#L729) |
+| Triton prefill kernel | [triton_prefill_attention.py](../vllm/vllm/v1/attention/ops/triton_prefill_attention.py#L191) |
+| Triton unified kernel | [triton_unified_attention.py](../vllm/vllm/v1/attention/ops/triton_unified_attention.py#L763) |
+| CUDA kernel V1 | [paged_attention_v1.cu](../csrc/attention/paged_attention_v1.cu#L160) |
+| CUDA kernel V2 | [paged_attention_v2.cu](../csrc/attention/paged_attention_v2.cu#L27) |
+| CUDA kernel 核心算法 | [attention_kernels.cuh](../csrc/attention/attention_kernels.cuh#L85) |
+| Cache CUDA kernel | [cache_kernels.cu](../csrc/cache_kernels.cu#L244) |
+| PagedAttention ops | [paged_attn.py](../vllm/vllm/v1/attention/ops/paged_attn.py#L15) |
+| Block 池 | [block_pool.py](../vllm/vllm/v1/core/block_pool.py#L130) |
+| KV Cache 工具 | [kv_cache_utils.py](../vllm/vllm/v1/core/kv_cache_utils.py#L116) |
+| KV Cache 管理器 | [kv_cache_manager.py](../vllm/vllm/v1/core/kv_cache_manager.py#L110) |
+| 单一类型管理器 | [single_type_kv_cache_manager.py](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L31) |
+| 协调器 | [kv_cache_coordinator.py](../vllm/vllm/v1/core/kv_cache_coordinator.py#L276) |
 
 ---
 
@@ -132,7 +153,7 @@ const cache_t* k_ptr =
 - **没有纹理单元** — 整个 `csrc/` 目录中不存在 `tex1Dfetch`、`cudaTextureObject_t` 等纹理硬件的使用
 - **没有 surface object** — 同样不存在任何 `surf2Dwrite` 之类的用法
 
-这在所有计算平台上是完全一致的 —— CUDA kernel（[attention_kernels.cuh](csrc/attention/attention_kernels.cuh#L253)）、ROCm kernel（[rocm/attention.cu](csrc/rocm/attention.cu#L438)）、CPU kernel（[cpu/cpu_attn_impl.hpp](csrc/cpu/cpu_attn_impl.hpp#L963)）全都是同样的 `block_table[block_idx]` 软件查表模式。
+这在所有计算平台上是完全一致的 —— CUDA kernel（[attention_kernels.cuh](../csrc/attention/attention_kernels.cuh#L253)）、ROCm kernel（[rocm/attention.cu](../csrc/rocm/attention.cu#L438)）、CPU kernel（[cpu/cpu_attn_impl.hpp](../csrc/cpu/cpu_attn_impl.hpp#L963)）全都是同样的 `block_table[block_idx]` 软件查表模式。
 
 #### 3.4.2 类比：这和 OS 虚拟内存的类比仅停留在概念层面
 
@@ -152,7 +173,7 @@ PagedAttention 借用了 OS 虚拟内存的**元语和命名**，但两者的实
 
 #### 3.4.3 那 cuMemCreate/cuMemMap 是干什么的？
 
-代码库中确实有 CUDA Virtual Memory API 的使用，位于 [cumem_allocator.cpp](csrc/cumem_allocator.cpp)，但它的角色和 block table 截然不同：
+代码库中确实有 CUDA Virtual Memory API 的使用，位于 [cumem_allocator.cpp](../csrc/cumem_allocator.cpp)，但它的角色和 block table 截然不同：
 
 ```
 CUDA Virtual Memory API (cuMemCreate / cuMemMap / cuMemSetAccess)
@@ -176,7 +197,7 @@ PagedAttention block_table
 
 ### 4.1 数据结构
 
-#### KVCacheBlock — [kv_cache_utils.py:116](vllm/v1/core/kv_cache_utils.py#L116)
+#### KVCacheBlock — [kv_cache_utils.py:116](../vllm/vllm/v1/core/kv_cache_utils.py#L116)
 
 ```python
 @dataclass(slots=True)
@@ -189,7 +210,7 @@ class KVCacheBlock:
     is_null: bool = False   # 空占位
 ```
 
-#### FreeKVCacheBlockQueue — [kv_cache_utils.py:164](vllm/v1/core/kv_cache_utils.py#L164)
+#### FreeKVCacheBlockQueue — [kv_cache_utils.py:164](../vllm/vllm/v1/core/kv_cache_utils.py#L164)
 
 所有空闲 block 组成**双向链表**，关键操作均为 O(1)：
 - `popleft()` / `popleft_n(n)` — FIFO 分配（缓存使能时实现 LRU 淘汰）
@@ -198,29 +219,29 @@ class KVCacheBlock:
 
 #### BlockHashToBlockMap
 
-哈希表：`(block_hash, group_id) → KVCacheBlock`，用于 prefix caching 的快速查找。成员变量在 [block_pool.py:171](vllm/v1/core/block_pool.py#L171) 初始化。
+哈希表：`(block_hash, group_id) → KVCacheBlock`，用于 prefix caching 的快速查找。成员变量在 [block_pool.py:171](../vllm/vllm/v1/core/block_pool.py#L171) 初始化。
 
-### 4.2 分配流程 — [kv_cache_manager.py:110](vllm/v1/core/kv_cache_manager.py#L110)
+### 4.2 分配流程 — [kv_cache_manager.py:110](../vllm/vllm/v1/core/kv_cache_manager.py#L110)
 
 ```
 新请求到达
   │
   ├─ 1. 计算 token hashes: hash((parent_hash, token_ids, extra_keys))
-  │      └─ hash_block_tokens() 位于 [kv_cache_utils.py:541](vllm/v1/core/kv_cache_utils.py#L541)
+  │      └─ hash_block_tokens() 位于 [kv_cache_utils.py:541](../vllm/vllm/v1/core/kv_cache_utils.py#L541)
   │
-  ├─ 2. find_longest_cache_hit() — [single_type_kv_cache_manager.py:373](vllm/v1/core/single_type_kv_cache_manager.py#L373)
+  ├─ 2. find_longest_cache_hit() — [single_type_kv_cache_manager.py:373](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L373)
   │     ├─ 从左到右扫描 logical block
   │     ├─ 查找 BlockHashToBlockMap
   │     └─ 找到最长连续匹配 → 命中 N 个 block
   │
-  ├─ 3. touch(命中 block) — [block_pool.py:402](vllm/v1/core/block_pool.py#L402)
+  ├─ 3. touch(命中 block) — [block_pool.py:402](../vllm/vllm/v1/core/block_pool.py#L402)
   │     └─ ref_cnt += 1（共享引用）
   │
-  ├─ 4. allocate_new_blocks(num_new_blocks) — [single_type_kv_cache_manager.py:243](vllm/v1/core/single_type_kv_cache_manager.py#L243)
+  ├─ 4. allocate_new_blocks(num_new_blocks) — [single_type_kv_cache_manager.py:243](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L243)
   │     ├─ 从 FreeKVCacheBlockQueue popleft()
   │     └─ 记录新 block 的 slot_mapping
   │
-  ├─ 5. cache_blocks(新 block) — [single_type_kv_cache_manager.py:278](vllm/v1/core/single_type_kv_cache_manager.py#L278)
+  ├─ 5. cache_blocks(新 block) — [single_type_kv_cache_manager.py:278](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L278)
   │     └─ 将 block hash 写入 BlockHashToBlockMap
   │
   └─ 6. 返回 KVCacheBlocks（包含 block_table + 新分配信息）
@@ -229,13 +250,13 @@ class KVCacheBlock:
 请求结束时：
 
 ```
-free(request) — [kv_cache_manager.py:429](vllm/v1/core/kv_cache_manager.py#L429)
+free(request) — [kv_cache_manager.py:429](../vllm/vllm/v1/core/kv_cache_manager.py#L429)
   ├─ ref_cnt -= 1（递减引用计数）
   ├─ 若 ref_cnt == 0 → 归还到 FreeKVCacheBlockQueue
   └─ 若 block 在缓存哈希表中 → 从哈希表移除
 ```
 
-### 4.3 Prefix Caching 的链式哈希 — [kv_cache_utils.py:541](vllm/v1/core/kv_cache_utils.py#L541)
+### 4.3 Prefix Caching 的链式哈希 — [kv_cache_utils.py:541](../vllm/vllm/v1/core/kv_cache_utils.py#L541)
 
 ```python
 def hash_block_tokens(hash_function, parent_block_hash, curr_block_token_ids, extra_keys):
@@ -244,46 +265,46 @@ def hash_block_tokens(hash_function, parent_block_hash, curr_block_token_ids, ex
 
 `extra_keys` 包含：LoRA 名称、多模态特征哈希、cache salt、prompt embed 哈希，保证不同配置下的缓存隔离。
 
-### 4.4 Attention Spec 类型 — [kv_cache_interface.py](vllm/v1/kv_cache_interface.py)
+### 4.4 Attention Spec 类型 — [kv_cache_interface.py](../vllm/vllm/v1/kv_cache_interface.py)
 
 | Spec | 行号 | 用途 | 特殊行为 |
 |------|------|------|---------|
-| `FullAttentionSpec` | [L188](vllm/v1/kv_cache_interface.py#L188) | 标准全注意力 | 请求结束前持有所有 block |
-| `SlidingWindowSpec` | [L435](vllm/v1/kv_cache_interface.py#L435) | 滑动窗口注意力 | 窗口外的旧 block 自动释放 |
-| `ChunkedLocalAttentionSpec` | [L407](vllm/v1/kv_cache_interface.py#L407) | 分块局部注意力 | 仅保留当前 chunk 的 block |
-| `SinkFullAttentionSpec` | [L615](vllm/v1/kv_cache_interface.py#L615) | 带 sink token 的注意力 | sink block 固定不释放 |
-| `MLAAttentionSpec` | [L337](vllm/v1/kv_cache_interface.py#L337) | DeepSeek MLA | 类似全注意力 |
-| `CrossAttentionSpec` | [L602](vllm/v1/kv_cache_interface.py#L602) | 编码器-解码器交叉注意力 | 不支持 prefix caching |
-| `MambaSpec` | [L563](vllm/v1/kv_cache_interface.py#L563) | Mamba SSM 状态缓存 | 特殊的 per-request state block |
-| `SlidingWindowMLASpec` | [L498](vllm/v1/kv_cache_interface.py#L498) | MLA + 滑动窗口 | DeepSeek V4 混合模式 |
-| `HiddenStateCacheSpec` | [L400](vllm/v1/kv_cache_interface.py#L400) | Hidden state 缓存 | 用于 extract_hidden_states |
+| `FullAttentionSpec` | [L188](../vllm/vllm/v1/kv_cache_interface.py#L188) | 标准全注意力 | 请求结束前持有所有 block |
+| `SlidingWindowSpec` | [L435](../vllm/vllm/v1/kv_cache_interface.py#L435) | 滑动窗口注意力 | 窗口外的旧 block 自动释放 |
+| `ChunkedLocalAttentionSpec` | [L407](../vllm/vllm/v1/kv_cache_interface.py#L407) | 分块局部注意力 | 仅保留当前 chunk 的 block |
+| `SinkFullAttentionSpec` | [L615](../vllm/vllm/v1/kv_cache_interface.py#L615) | 带 sink token 的注意力 | sink block 固定不释放 |
+| `MLAAttentionSpec` | [L337](../vllm/vllm/v1/kv_cache_interface.py#L337) | DeepSeek MLA | 类似全注意力 |
+| `CrossAttentionSpec` | [L602](../vllm/vllm/v1/kv_cache_interface.py#L602) | 编码器-解码器交叉注意力 | 不支持 prefix caching |
+| `MambaSpec` | [L563](../vllm/vllm/v1/kv_cache_interface.py#L563) | Mamba SSM 状态缓存 | 特殊的 per-request state block |
+| `SlidingWindowMLASpec` | [L498](../vllm/vllm/v1/kv_cache_interface.py#L498) | MLA + 滑动窗口 | DeepSeek V4 混合模式 |
+| `HiddenStateCacheSpec` | [L400](../vllm/vllm/v1/kv_cache_interface.py#L400) | Hidden state 缓存 | 用于 extract_hidden_states |
 
-对应的管理器（[single_type_kv_cache_manager.py](vllm/v1/core/single_type_kv_cache_manager.py)）：
+对应的管理器（[single_type_kv_cache_manager.py](../vllm/vllm/v1/core/single_type_kv_cache_manager.py)）：
 
 | Manager | 行号 | 对应的 Spec |
 |---------|------|------------|
-| `SingleTypeKVCacheManager` (基类) | [L31](vllm/v1/core/single_type_kv_cache_manager.py#L31) | — |
-| `FullAttentionManager` | [L481](vllm/v1/core/single_type_kv_cache_manager.py#L481) | FullAttentionSpec, MLAAttentionSpec, HiddenStateCacheSpec |
-| `SlidingWindowManager` | [L542](vllm/v1/core/single_type_kv_cache_manager.py#L542) | SlidingWindowSpec, SlidingWindowMLASpec |
-| `ChunkedLocalAttentionManager` | [L692](vllm/v1/core/single_type_kv_cache_manager.py#L692) | ChunkedLocalAttentionSpec |
-| `MambaManager` | [L842](vllm/v1/core/single_type_kv_cache_manager.py#L842) | MambaSpec |
-| `CrossAttentionManager` | [L1122](vllm/v1/core/single_type_kv_cache_manager.py#L1122) | CrossAttentionSpec |
-| `SinkFullAttentionManager` | [L1176](vllm/v1/core/single_type_kv_cache_manager.py#L1176) | SinkFullAttentionSpec |
+| `SingleTypeKVCacheManager` (基类) | [L31](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L31) | — |
+| `FullAttentionManager` | [L481](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L481) | FullAttentionSpec, MLAAttentionSpec, HiddenStateCacheSpec |
+| `SlidingWindowManager` | [L542](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L542) | SlidingWindowSpec, SlidingWindowMLASpec |
+| `ChunkedLocalAttentionManager` | [L692](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L692) | ChunkedLocalAttentionSpec |
+| `MambaManager` | [L842](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L842) | MambaSpec |
+| `CrossAttentionManager` | [L1122](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L1122) | CrossAttentionSpec |
+| `SinkFullAttentionManager` | [L1176](../vllm/vllm/v1/core/single_type_kv_cache_manager.py#L1176) | SinkFullAttentionSpec |
 
-### 4.5 多种 Attention Type 的协调 — [kv_cache_coordinator.py](vllm/v1/core/kv_cache_coordinator.py)
+### 4.5 多种 Attention Type 的协调 — [kv_cache_coordinator.py](../vllm/vllm/v1/core/kv_cache_coordinator.py)
 
 | 协调器 | 行号 | 说明 |
 |--------|------|------|
-| `KVCacheCoordinatorNoPrefixCache` | [L276](vllm/v1/core/kv_cache_coordinator.py#L276) | 禁用 prefix caching，直接返回空命中 |
-| `UnitaryKVCacheCoordinator` | [L324](vllm/v1/core/kv_cache_coordinator.py#L324) | 单一 attention type，直接委托 |
-| `HybridKVCacheCoordinator` | [L392](vllm/v1/core/kv_cache_coordinator.py#L392) | 多种 attention type，固定点迭代协调 |
+| `KVCacheCoordinatorNoPrefixCache` | [L276](../vllm/vllm/v1/core/kv_cache_coordinator.py#L276) | 禁用 prefix caching，直接返回空命中 |
+| `UnitaryKVCacheCoordinator` | [L324](../vllm/vllm/v1/core/kv_cache_coordinator.py#L324) | 单一 attention type，直接委托 |
+| `HybridKVCacheCoordinator` | [L392](../vllm/vllm/v1/core/kv_cache_coordinator.py#L392) | 多种 attention type，固定点迭代协调 |
 
 `HybridKVCacheCoordinator` 处理一个模型存在多种 attention type（如 sliding window + full attention 混合）的情况：
 
 1. 各 type 的 manager 独立计算 cache hit
 2. 若任何 type 缩短了 hit 长度，触发**固定点迭代**重新计算
 3. 最终 hit 长度必须是所有 type 的 block size 的 LCM 的倍数
-4. 使用 [BlockHashListWithBlockSize](vllm/v1/core/kv_cache_utils.py#L2079) 在不同 block size 粒度间转换哈希
+4. 使用 [BlockHashListWithBlockSize](../vllm/vllm/v1/core/kv_cache_utils.py#L2079) 在不同 block size 粒度间转换哈希
 
 ### 4.6 Block 大小与内存计算
 
@@ -303,7 +324,7 @@ num_blocks = available_memory // page_size // num_layers
 
 ## 5. Backend 体系
 
-### 5.1 Backend 注册 — [registry.py:34](vllm/v1/attention/backends/registry.py#L34)
+### 5.1 Backend 注册 — [registry.py:34](../vllm/vllm/v1/attention/backends/registry.py#L34)
 
 通过 `AttentionBackendEnum` 枚举注册：
 
@@ -318,7 +339,7 @@ class AttentionBackendEnum(enum.Enum):
     # ... 还有 MLA 变体
 ```
 
-### 5.2 Backend 选择 — [selector.py:52](vllm/v1/attention/selector.py#L52)
+### 5.2 Backend 选择 — [selector.py:52](../vllm/vllm/v1/attention/selector.py#L52)
 
 `get_attn_backend()` 根据以下因素选择后端：
 
@@ -329,21 +350,21 @@ class AttentionBackendEnum(enum.Enum):
 
 | Backend | 行号 | 特点 |
 |---------|------|------|
-| **FlashAttention** | [flash_attn.py:68](vllm/v1/attention/backends/flash_attn.py#L68) | 主路径，性能最优，原生支持 block table 和 cascade attention |
-| **Triton** | [triton_attn.py:271](vllm/v1/attention/backends/triton_attn.py#L271) | 纯 Triton 实现，支持 ALiBi、sliding window、FP8 量化、block sparsity |
+| **FlashAttention** | [flash_attn.py:68](../vllm/vllm/v1/attention/backends/flash_attn.py#L68) | 主路径，性能最优，原生支持 block table 和 cascade attention |
+| **Triton** | [triton_attn.py:271](../vllm/vllm/v1/attention/backends/triton_attn.py#L271) | 纯 Triton 实现，支持 ALiBi、sliding window、FP8 量化、block sparsity |
 | **FlashInfer** | — | 第三方 FlashInfer 库 |
 | **FlexAttention** | — | PyTorch 原生 flex attention |
 | **ROCm** | — | AMD GPU 专用 |
 | **CPU** | — | CPU 后端 |
 
-### 5.3 抽象类设计 — [backend.py](vllm/v1/attention/backend.py)
+### 5.3 抽象类设计 — [backend.py](../vllm/vllm/v1/attention/backend.py)
 
 | 抽象类 | 行号 | 职责 |
 |--------|------|------|
-| `AttentionBackend` | [L55](vllm/v1/attention/backend.py#L55) | 静态方法：能力检测、KV cache shape、支持的 block size / head size / dtype |
-| `AttentionMetadataBuilder` | [L516](vllm/v1/attention/backend.py#L516) | 构建 per-step 元数据（block_table, slot_mapping 等） |
-| `AttentionImpl` | [L763](vllm/v1/attention/backend.py#L763) | per-layer 实现：`forward()` 和 `do_kv_cache_update()` |
-| `CommonAttentionMetadata` | [L353](vllm/v1/attention/backend.py#L353) | 所有 backend 共享的元数据 |
+| `AttentionBackend` | [L55](../vllm/vllm/v1/attention/backend.py#L55) | 静态方法：能力检测、KV cache shape、支持的 block size / head size / dtype |
+| `AttentionMetadataBuilder` | [L516](../vllm/vllm/v1/attention/backend.py#L516) | 构建 per-step 元数据（block_table, slot_mapping 等） |
+| `AttentionImpl` | [L763](../vllm/vllm/v1/attention/backend.py#L763) | per-layer 实现：`forward()` 和 `do_kv_cache_update()` |
+| `CommonAttentionMetadata` | [L353](../vllm/vllm/v1/attention/backend.py#L353) | 所有 backend 共享的元数据 |
 
 ```python
 class AttentionBackend:
@@ -365,7 +386,7 @@ class AttentionImpl:
     do_kv_cache_update(layer, key, value, kv_cache, slot_mapping)
 ```
 
-### 5.4 CommonAttentionMetadata — [backend.py:353](vllm/v1/attention/backend.py#L353)
+### 5.4 CommonAttentionMetadata — [backend.py:353](../vllm/vllm/v1/attention/backend.py#L353)
 
 所有 backend 共享的元数据：
 
@@ -385,18 +406,18 @@ class CommonAttentionMetadata:
 
 ## 6. FlashAttention 后端（主路径）
 
-路径：[flash_attn.py](vllm/v1/attention/backends/flash_attn.py)
+路径：[flash_attn.py](../vllm/vllm/v1/attention/backends/flash_attn.py)
 
 ### 6.1 类总览
 
 | 类 | 行号 | 职责 |
 |----|------|------|
-| `FlashAttentionBackend` | [L68](vllm/v1/attention/backends/flash_attn.py#L68) | Backend 入口，能力检测 |
-| `FlashAttentionMetadata` | [L223](vllm/v1/attention/backends/flash_attn.py#L223) | 包含 block_table、slot_mapping、seq_lens 等 |
-| `FlashAttentionMetadataBuilder` | [L276](vllm/v1/attention/backends/flash_attn.py#L276) | 构建元数据，支持 cascade attention、AOT 调度 |
-| `FlashAttentionImpl` | [L592](vllm/v1/attention/backends/flash_attn.py#L592) | per-layer 实现 |
+| `FlashAttentionBackend` | [L68](../vllm/vllm/v1/attention/backends/flash_attn.py#L68) | Backend 入口，能力检测 |
+| `FlashAttentionMetadata` | [L223](../vllm/vllm/v1/attention/backends/flash_attn.py#L223) | 包含 block_table、slot_mapping、seq_lens 等 |
+| `FlashAttentionMetadataBuilder` | [L276](../vllm/vllm/v1/attention/backends/flash_attn.py#L276) | 构建元数据，支持 cascade attention、AOT 调度 |
+| `FlashAttentionImpl` | [L592](../vllm/vllm/v1/attention/backends/flash_attn.py#L592) | per-layer 实现 |
 
-### 6.2 核心 forward 流程 — [flash_attn.py:667](vllm/v1/attention/backends/flash_attn.py#L667)
+### 6.2 核心 forward 流程 — [flash_attn.py:667](../vllm/vllm/v1/attention/backends/flash_attn.py#L667)
 
 ```python
 class FlashAttentionImpl.forward():
@@ -419,7 +440,7 @@ class FlashAttentionImpl.forward():
 
 FlashAttention 库原生支持 `block_table` 参数，在 kernel 内部完成逻辑→物理 block 的间接寻址。
 
-### 6.3 KV Cache 更新 — [flash_attn.py:850](vllm/v1/attention/backends/flash_attn.py#L850)
+### 6.3 KV Cache 更新 — [flash_attn.py:850](../vllm/vllm/v1/attention/backends/flash_attn.py#L850)
 
 ```python
 class FlashAttentionImpl.do_kv_cache_update():
@@ -448,7 +469,7 @@ class FlashAttentionImpl.do_kv_cache_update():
 ```
 
 关键逻辑：
-1. `get_num_common_prefix_blocks()` — [kv_cache_manager.py:476](vllm/v1/core/kv_cache_manager.py#L476) 计算所有请求的最长公共前缀
+1. `get_num_common_prefix_blocks()` — [kv_cache_manager.py:476](../vllm/vllm/v1/core/kv_cache_manager.py#L476) 计算所有请求的最长公共前缀
 2. Prefix 部分用 `causal=False` 计算一次
 3. 各请求的 suffix 用 `causal=True` 分别计算
 4. `merge_attn_states()` 用 online softmax 公式合并两部分
@@ -465,7 +486,7 @@ kernel<<<grid(num_heads, num_seqs), block(NUM_THREADS=128)>>>(...)
 
 每个 thread block 处理 **一个 head × 一个 sequence**。128 个线程，按 warp (32 threads) 组织。
 
-### 7.2 核心算法 — [attention_kernels.cuh:85](csrc/attention/attention_kernels.cuh#L85)
+### 7.2 核心算法 — [attention_kernels.cuh:85](../csrc/attention/attention_kernels.cuh#L85)
 
 `paged_attention_kernel()` 是 V1 使用的 device 函数，五个阶段：
 
@@ -499,14 +520,14 @@ kernel<<<grid(num_heads, num_seqs), block(NUM_THREADS=128)>>>(...)
 └─────────────────────────────────────────────────┘
 ```
 
-核心的 QK 点积使用 [Qk_dot](csrc/attention/attention_utils.cuh#L50) 模板结构体，在 [attention_kernels.cuh:289](csrc/attention/attention_kernels.cuh#L289) 处调用。
+核心的 QK 点积使用 [Qk_dot](../csrc/attention/attention_utils.cuh#L50) 模板结构体，在 [attention_kernels.cuh:289](../csrc/attention/attention_kernels.cuh#L289) 处调用。
 
 ### 7.3 V1 vs V2 Kernel
 
 | | V1 | V2 |
 |---|---|---|
-| **入口** | [paged_attention_v1.cu:160](csrc/attention/paged_attention_v1.cu#L160) | [paged_attention_v2.cu](csrc/attention/paged_attention_v2.cu) |
-| **Kernel 定义** | [attention_kernels.cuh:85](csrc/attention/attention_kernels.cuh#L85) (device 函数)<br>[attention_kernels.cuh:497](csrc/attention/attention_kernels.cuh#L497) (global kernel) | [attention_kernels.cuh:529](csrc/attention/attention_kernels.cuh#L529) (forward)<br>[attention_kernels.cuh:562](csrc/attention/attention_kernels.cuh#L562) (reduce) |
+| **入口** | [paged_attention_v1.cu:160](../csrc/attention/paged_attention_v1.cu#L160) | [paged_attention_v2.cu](../csrc/attention/paged_attention_v2.cu) |
+| **Kernel 定义** | [attention_kernels.cuh:85](../csrc/attention/attention_kernels.cuh#L85) (device 函数)<br>[attention_kernels.cuh:497](../csrc/attention/attention_kernels.cuh#L497) (global kernel) | [attention_kernels.cuh:529](../csrc/attention/attention_kernels.cuh#L529) (forward)<br>[attention_kernels.cuh:562](../csrc/attention/attention_kernels.cuh#L562) (reduce) |
 | **适用场景** | 中短序列 | 长序列 |
 | **策略** | 单 kernel，串行遍历所有 block | partition 并行 + reduce 合并 |
 | **Partition 大小** | N/A | 512 tokens |
@@ -515,12 +536,12 @@ kernel<<<grid(num_heads, num_seqs), block(NUM_THREADS=128)>>>(...)
 
 V2 的优势：对于超长上下文，将 KV cache 分成多个 partition 并行计算，每个 partition 独立做 attention，最后通过 rescale + online softmax 校正合并。
 
-### 7.4 KV Cache 写入 Kernel — [cache_kernels.cu](csrc/cache_kernels.cu)
+### 7.4 KV Cache 写入 Kernel — [cache_kernels.cu](../csrc/cache_kernels.cu)
 
 | Kernel | 行号 | 说明 |
 |--------|------|------|
-| `reshape_and_cache_kernel` | [L244](csrc/cache_kernels.cu#L244) | 基础版本：`[num_blocks, num_heads, head_size//x, block_size, x]` 布局 |
-| `reshape_and_cache_flash_kernel` | [L304](csrc/cache_kernels.cu#L304) | 灵活版本：支持 NHD/HND 布局 + FP8 量化 |
+| `reshape_and_cache_kernel` | [L244](../csrc/cache_kernels.cu#L244) | 基础版本：`[num_blocks, num_heads, head_size//x, block_size, x]` 布局 |
+| `reshape_and_cache_flash_kernel` | [L304](../csrc/cache_kernels.cu#L304) | 灵活版本：支持 NHD/HND 布局 + FP8 量化 |
 
 ```cuda
 // reshape_and_cache_kernel
@@ -539,14 +560,14 @@ for each token:
 
 ## 8. Triton 实现
 
-路径：[vllm/v1/attention/ops/](vllm/v1/attention/ops/)
+路径：[vllm/v1/attention/ops/](../vllm/vllm/v1/attention/ops/)
 
 | Kernel | 行号 | 用途 |
 |--------|------|------|
-| `decode_attention_fwd` | [triton_decode_attention.py:729](vllm/v1/attention/ops/triton_decode_attention.py#L729) | 自回归 decode 阶段（1 query token） |
-| `context_attention_fwd` | [triton_prefill_attention.py:191](vllm/v1/attention/ops/triton_prefill_attention.py#L191) | 预填充阶段（多 query tokens） |
-| `unified_attention` | [triton_unified_attention.py:763](vllm/v1/attention/ops/triton_unified_attention.py#L763) | 统一的 prefill + decode kernel |
-| `triton_reshape_and_cache_flash` | [triton_reshape_and_cache_flash.py:319](vllm/v1/attention/ops/triton_reshape_and_cache_flash.py#L319) | KV cache 写入 |
+| `decode_attention_fwd` | [triton_decode_attention.py:729](../vllm/vllm/v1/attention/ops/triton_decode_attention.py#L729) | 自回归 decode 阶段（1 query token） |
+| `context_attention_fwd` | [triton_prefill_attention.py:191](../vllm/vllm/v1/attention/ops/triton_prefill_attention.py#L191) | 预填充阶段（多 query tokens） |
+| `unified_attention` | [triton_unified_attention.py:763](../vllm/vllm/v1/attention/ops/triton_unified_attention.py#L763) | 统一的 prefill + decode kernel |
+| `triton_reshape_and_cache_flash` | [triton_reshape_and_cache_flash.py:319](../vllm/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py#L319) | KV cache 写入 |
 
 额外功能：
 - ALiBi 位置编码
@@ -557,14 +578,14 @@ for each token:
 
 ---
 
-## 9. PagedAttention Ops — [paged_attn.py:15](vllm/v1/attention/ops/paged_attn.py#L15)
+## 9. PagedAttention Ops — [paged_attn.py:15](../vllm/vllm/v1/attention/ops/paged_attn.py#L15)
 
 `PagedAttention` 类提供两个关键静态方法：
 
 | 方法 | 行号 | 功能 |
 |------|------|------|
-| `split_kv_cache` | [L17](vllm/v1/attention/ops/paged_attn.py#L17) | 将 flat KV cache tensor 拆分为 key/value cache 视图（v0 布局） |
-| `write_to_paged_cache` | [L32](vllm/v1/attention/ops/paged_attn.py#L32) | 调用 `ops.reshape_and_cache()` 散射写入 KV 数据 |
+| `split_kv_cache` | [L17](../vllm/vllm/v1/attention/ops/paged_attn.py#L17) | 将 flat KV cache tensor 拆分为 key/value cache 视图（v0 布局） |
+| `write_to_paged_cache` | [L32](../vllm/vllm/v1/attention/ops/paged_attn.py#L32) | 调用 `ops.reshape_and_cache()` 散射写入 KV 数据 |
 
 ---
 
@@ -684,11 +705,11 @@ PagedAttention 的创新不在于"发现了 GPU 硬件支持分页"，而在于*
 | 决策 | 代码位置 | 设计 | 理由 |
 |------|----------|------|------|
 | **Block 粒度** | — | 16/32 tokens/block | 平衡内存碎片和管理开销 |
-| **间接寻址** | [attention_kernels.cuh:85](csrc/attention/attention_kernels.cuh#L85) | block_table 在 kernel 内查表（纯软件） | 实现物理/逻辑解耦的根本机制 |
-| **Online softmax** | [attention_kernels.cuh:305-341](csrc/attention/attention_kernels.cuh#L305) | 分块计算 + 在线归一化 | 不需要一次性加载全部 KV cache |
-| **引用计数** | [kv_cache_utils.py:116](vllm/v1/core/kv_cache_utils.py#L116) | `ref_cnt` 管理共享 | 多个请求安全共享 prefix block |
-| **空闲链表** | [kv_cache_utils.py:164](vllm/v1/core/kv_cache_utils.py#L164) | 双向链表 O(1) 分配/释放 | 高频分配场景的性能关键 |
-| **链式哈希** | [kv_cache_utils.py:541](vllm/v1/core/kv_cache_utils.py#L541) | 考虑父 block + 额外 key | 前缀隔离 + 精准缓存匹配 |
-| **Cascade attention** | [flash_attn.py:276](vllm/v1/attention/backends/flash_attn.py#L276) | 共享前缀一次计算 | 批量场景减少重复 KV 计算 |
-| **V2 长序列** | [attention_kernels.cuh:529](csrc/attention/attention_kernels.cuh#L529) | Partition 并行 + reduce | 超长 context 的并行加速 |
-| **多 type 协调** | [kv_cache_coordinator.py:392](vllm/v1/core/kv_cache_coordinator.py#L392) | 固定点迭代 | 混合 attention type 模型的正确性保证 |
+| **间接寻址** | [attention_kernels.cuh:85](../csrc/attention/attention_kernels.cuh#L85) | block_table 在 kernel 内查表（纯软件） | 实现物理/逻辑解耦的根本机制 |
+| **Online softmax** | [attention_kernels.cuh:305-341](../csrc/attention/attention_kernels.cuh#L305) | 分块计算 + 在线归一化 | 不需要一次性加载全部 KV cache |
+| **引用计数** | [kv_cache_utils.py:116](../vllm/vllm/v1/core/kv_cache_utils.py#L116) | `ref_cnt` 管理共享 | 多个请求安全共享 prefix block |
+| **空闲链表** | [kv_cache_utils.py:164](../vllm/vllm/v1/core/kv_cache_utils.py#L164) | 双向链表 O(1) 分配/释放 | 高频分配场景的性能关键 |
+| **链式哈希** | [kv_cache_utils.py:541](../vllm/vllm/v1/core/kv_cache_utils.py#L541) | 考虑父 block + 额外 key | 前缀隔离 + 精准缓存匹配 |
+| **Cascade attention** | [flash_attn.py:276](../vllm/vllm/v1/attention/backends/flash_attn.py#L276) | 共享前缀一次计算 | 批量场景减少重复 KV 计算 |
+| **V2 长序列** | [attention_kernels.cuh:529](../csrc/attention/attention_kernels.cuh#L529) | Partition 并行 + reduce | 超长 context 的并行加速 |
+| **多 type 协调** | [kv_cache_coordinator.py:392](../vllm/vllm/v1/core/kv_cache_coordinator.py#L392) | 固定点迭代 | 混合 attention type 模型的正确性保证 |
