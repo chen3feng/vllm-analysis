@@ -10,7 +10,7 @@
 
 [vLLM](https://github.com/vllm-project/vllm) 于 2023 年 6 月由 UC Berkeley [Sky Computing Lab](https://sky.cs.berkeley.edu) 开源，最初是 **PagedAttention** 技术的展示项目。PagedAttention 借鉴操作系统虚拟内存的思想，将 KV cache 划分为固定大小的 block（页），一举消除了预分配导致的碎片问题——官方数据显示内存浪费不到 4%，吞吐量相比 HuggingFace Transformers 最高提升 **24 倍**。
 
-这一突破迅速引发社区关注。在开源之前，vLLM 已在 [Chatbot Arena](https://arena.lmsys.org) 悄然支撑了数百万用户的 Vicuna 对话服务——用 vLLM 替代原始 HF Transformers 后端后，内部基准测试显示吞吐提升高达 **30 倍**。此后 vLLM 被大量公司集成到生产系统，社区贡献者超过 2000 人，成为生产系统上事实上的 LLM 推理标准。
+这一突破迅速引发社区关注。在开源之前，vLLM 已在 [Chatbot Arena](https://arena.ai) 悄然支撑了数百万用户的 Vicuna 对话服务——用 vLLM 替代原始 HF Transformers 后端后，内部基准测试显示吞吐提升高达 **30 倍**。此后 vLLM 被大量公司集成到生产系统，社区贡献者超过 2000 人，成为生产系统上事实上的 LLM 推理标准。
 
 然而 vLLM 源码规模庞大（Python 约 20 万行 + C++/CUDA 数万行 + Rust 前端），架构复杂（多进程通信、三套算子注册机制、六种 attention backend、数十种量化方法），官方文档侧重于使用和配置，对内部实现鲜有涉及。
 
