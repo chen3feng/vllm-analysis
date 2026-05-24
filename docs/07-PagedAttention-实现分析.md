@@ -1,3 +1,8 @@
+---
+title: PagedAttention 实现分析
+nav_order: 8
+---
+
 # PagedAttention 在 vLLM 中的实现分析
 
 ## 1. 概述
