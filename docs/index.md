@@ -31,7 +31,8 @@ nav_order: 1
 | 4 | [模型加载流程分析](04-模型加载流程分析.md) | 9 种 ModelLoader、600+ 模型注册表、权重迭代与 TP 分片 |
 | 5 | [推理流程分析](05-推理流程分析.md) | Step 循环：调度 → Attention → 采样 → 输出 |
 | 6 | [算子注册与分发](06-算子注册与分发.md) | Python ↔ C++/CUDA/Triton 的桥梁 |
-| 7 | [PagedAttention 实现分析](07-PagedAttention-实现分析.md) | Block Table、KV cache 管理、CUDA/Triton kernel 深入 |
+| 7 | [FlashAttention 实现分析](07-FlashAttention-实现分析.md) | vLLM 默认后端：版本选择、cascade attention、DCP |
+| 8 | [PagedAttention 实现分析](08-PagedAttention-实现分析.md) | Block Table、KV cache 管理、CUDA/Triton kernel 深入 |
 
 
 ## 如何使用

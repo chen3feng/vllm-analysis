@@ -42,7 +42,8 @@ cd vllm-analysis
 | 4 | [模型加载流程分析](docs/04-模型加载流程分析.md) | 9 种 ModelLoader、架构解析（600+ 模型注册表）、权重迭代器与 TP 分片、量化后处理 |
 | 5 | [推理流程分析](docs/05-推理流程分析.md) | Step 循环：请求提交 → 调度 → 模型执行 → Attention 读写 KV cache → 采样 → 输出处理 → 请求完成 |
 | 6 | [算子注册与分发](docs/06-算子注册与分发.md) | Python ↔ C++/CUDA/Triton 的桥梁：三种注册机制、`torch.ops._C.*` vs `torch.ops.vllm.*` vs `@triton.jit`、attention 算子的完整分发路线 |
-| 7 | [PagedAttention 实现分析](docs/07-PagedAttention-实现分析.md) | Block Table 机制（纯软件抽象 vs GPU 硬件）、KV cache 内存管理、CUDA/Triton kernel 实现、prefix caching、为何传统引擎没有此机制 |
+| 7 | [FlashAttention 实现分析](docs/07-FlashAttention-实现分析.md) | vLLM 默认 attention 后端：FA2/FA3/FA4 版本选择、forward 流程、cascade attention、DCP、与 PagedAttention 集成 |
+| 8 | [PagedAttention 实现分析](docs/08-PagedAttention-实现分析.md) | Block Table 机制（纯软件抽象 vs GPU 硬件）、KV cache 内存管理、CUDA/Triton kernel 实现、prefix caching、为何传统引擎没有此机制 |
 
 ## 文档特点
 
