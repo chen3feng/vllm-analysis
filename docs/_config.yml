@@ -1,6 +1,6 @@
 title: vLLM 源码分析
 description: vLLM 源码深度分析——逐模块拆解架构、PagedAttention、调度器、模型加载等核心机制
-remote_theme: just-the-docs
+remote_theme: just-the-docs/just-the-docs
 url: https://chen3feng.github.io/vllm-analysis
 
 # Navigation
