@@ -20,30 +20,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.4'
-          bundler-cache: false
-
-      - name: Install Jekyll
-        run: gem install jekyll bundler
-
-      - name: Create Gemfile
+      - name: Rewrite source links for Pages
         run: |
-          cat > docs/Gemfile << 'GEMFILE'
-          source "https://rubygems.org"
-          gem "jekyll"
-          gem "just-the-docs"
-          GEMFILE
-
-      - name: Install gems
-        run: cd docs && bundle install
-
-      - name: Build Jekyll site
-        run: |
+          BASE="https://github.com/vllm-project/vllm/blob/${{ github.event.repository.default_branch || '5bb8d2767a2829b56e58c68fa8f380e9e4e2bd3e' }}"
+          # The submodule is pinned, so use that commit hash directly
+          COMMIT="5bb8d2767a2829b56e58c68fa8f380e9e4e2bd3e"
+          BASE="https://github.com/vllm-project/vllm/blob/${COMMIT}"
           cd docs
-          bundle exec jekyll build --destination ../_site
+          for f in 0*.md; do
+            sed -i \
+              -e "s|](\.\./vllm/vllm/|](${BASE}/vllm/|g" \
+              -e "s|](\.\./csrc/|](${BASE}/csrc/|g" \
+              -e "s|](\.\./setup\.py|](${BASE}/setup.py|g" \
+              -e "s|](\.\./CMakeLists\.txt|](${BASE}/CMakeLists.txt|g" \
+              -e "s|](\.\./pyproject\.toml|](${BASE}/pyproject.toml|g" \
+              -e "s|](\.\./cmake/|](${BASE}/cmake/|g" \
+              "$f"
+          done
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
