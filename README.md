@@ -16,11 +16,12 @@ cd vllm-analysis
 | # | 文档 | 内容 |
 |---|------|------|
 | 1 | [架构概述](docs/01-架构概述.md) | vLLM 是什么、分层架构、一次请求的完整生命周期、关键子系统、所有文档入口 |
-| 2 | [PagedAttention 实现分析](docs/02-PagedAttention-实现分析.md) | Block Table 机制（纯软件抽象 vs GPU 硬件）、KV cache 内存管理、CUDA/Triton kernel 实现、prefix caching、为何传统引擎没有此机制 |
+| 2 | [代码结构分析](docs/02-代码结构分析.md) | 顶层目录、CMake/setuptools 构建系统、C++/CUDA/Rust 代码组织、CI 与测试 |
 | 3 | [初始化流程分析](docs/03-初始化流程分析.md) | Engine 启动序列：配置解析 → Executor/Worker → 模型加载 → 显存 Profiling → KV cache 分配 → BlockPool → Scheduler |
-| 4 | [推理流程分析](docs/04-推理流程分析.md) | Step 循环：请求提交 → 调度 → 模型执行 → Attention 读写 KV cache → 采样 → 输出处理 → 请求完成 |
-| 5 | [模型加载流程分析](docs/05-模型加载流程分析.md) | 9 种 ModelLoader、架构解析（600+ 模型注册表）、权重迭代器与 TP 分片、量化后处理 |
-| 6 | [代码结构分析](docs/06-代码结构分析.md) | 顶层目录、CMake/setuptools 构建系统、C++/CUDA/Rust 代码组织、算子注册机制（TORCH_LIBRARY_EXPAND / STABLE_TORCH_LIBRARY_FRAGMENT）、CI 与测试 |
+| 4 | [模型加载流程分析](docs/04-模型加载流程分析.md) | 9 种 ModelLoader、架构解析（600+ 模型注册表）、权重迭代器与 TP 分片、量化后处理 |
+| 5 | [推理流程分析](docs/05-推理流程分析.md) | Step 循环：请求提交 → 调度 → 模型执行 → Attention 读写 KV cache → 采样 → 输出处理 → 请求完成 |
+| 6 | [算子注册与分发](docs/06-算子注册与分发.md) | Python ↔ C++/CUDA/Triton 的桥梁：三种注册机制、`torch.ops._C.*` vs `torch.ops.vllm.*` vs `@triton.jit`、attention 算子的完整分发路线 |
+| 7 | [PagedAttention 实现分析](docs/07-PagedAttention-实现分析.md) | Block Table 机制（纯软件抽象 vs GPU 硬件）、KV cache 内存管理、CUDA/Triton kernel 实现、prefix caching、为何传统引擎没有此机制 |
 
 ## 文档特点
 
