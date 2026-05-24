@@ -12,3 +12,8 @@ search:
 
 # Sidebar
 nav_sort: case_sensitive
+
+# Source code link rewriting (for GitHub Pages)
+# The plugin rewrites local submodule paths to GitHub blob URLs
+source_rewrite:
+  base: https://github.com/vllm-project/vllm/blob/5bb8d2767a2829b56e58c68fa8f380e9e4e2bd3e
