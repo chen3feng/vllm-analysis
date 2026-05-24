@@ -5,10 +5,21 @@ nav_order: 1
 
 # vLLM 源码深度分析
 
-vLLM 是目前最流行的 LLM 推理引擎，以 PagedAttention 技术闻名。这份文档集逐模块拆解其核心机制——从架构全景到 C++/CUDA kernel 细节。
+## 背景
 
-所有代码引用均可点击直达源码对应行号。
+大语言模型的能力越来越强，企业本地部署开源模型的需求也在快速增长。但在 vLLM 出现之前，部署 LLM 面临三个棘手问题：
 
+- **显存浪费严重**：传统推理引擎为每个请求预分配一整块连续显存来存放 KV cache，按最大长度预留——实际只用了一小部分，大量显存白白空置。
+- **并发上不去**：显存被碎片化占用后，能同时服务的请求数大打折扣，GPU 算力大量闲置。
+- **成本居高不下**：单次推理价格降不下来，规模化服务难以为继。
+
+[vLLM](https://github.com/vllm-project/vllm) 于 2023 年 6 月由 UC Berkeley [Sky Computing Lab](https://sky.cs.berkeley.edu) 开源，最初是 **PagedAttention** 技术的展示项目。PagedAttention 借鉴操作系统虚拟内存的思想，将 KV cache 划分为固定大小的 block（页），一举消除了预分配导致的碎片问题——官方数据显示内存浪费不到 4%，吞吐量相比 HuggingFace Transformers 最高提升 **24 倍**。
+
+这一突破迅速引发社区关注。在开源之前，vLLM 已在 [Chatbot Arena](https://arena.ai) 悄然支撑了数百万用户的 Vicuna 对话服务——用 vLLM 替代原始 HF Transformers 后端后，内部基准测试显示吞吐提升高达 **30 倍**。此后 vLLM 被大量公司集成到生产系统，社区贡献者超过 2000 人，成为生产系统上事实上的 LLM 推理标准。
+
+然而 vLLM 源码规模庞大（Python 约 20 万行 + C++/CUDA 数万行 + Rust 前端），架构复杂（多进程通信、三套算子注册机制、六种 attention backend、数十种量化方法），官方文档侧重于使用和配置，对内部实现鲜有涉及。
+
+本系列文档从源码出发，逐模块拆解 vLLM 的核心机制——由浅入深，从架构全景逐步深入到 CUDA kernel 的地址翻译细节。
 
 ## 文档导航
 
