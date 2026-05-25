@@ -31,7 +31,7 @@ jobs:
           echo "vllm submodule pinned at: $COMMIT"
           BASE="https://github.com/vllm-project/vllm/blob/${COMMIT}"
           cd docs
-          for f in 0*.md; do
+          for f in [0-9]*.md; do
             sed -i \
               -e "s|](\.\./vllm/vllm/|](${BASE}/vllm/|g" \
               -e "s|](\.\./csrc/|](${BASE}/csrc/|g" \
